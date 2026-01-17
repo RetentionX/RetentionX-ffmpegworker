@@ -13,6 +13,26 @@ const app = express();
 app.use(express.json());
 
 /* ===============================
+   AUTH MIDDLEWARE (REQUIRED)
+================================ */
+
+app.use((req, res, next) => {
+  const auth = req.headers.authorization;
+
+  // Allow health check without auth
+  if (req.path === "/") return next();
+
+  // If no API key configured, allow (dev mode)
+  if (!process.env.FFMPEG_API_KEY) return next();
+
+  if (!auth || auth !== `Bearer ${process.env.FFMPEG_API_KEY}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  next();
+});
+
+/* ===============================
    BASIC CONFIG
 ================================ */
 
