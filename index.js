@@ -63,32 +63,11 @@ app.get("/", (req, res) => {
 
 app.post("/analyze-silence", upload.single("video"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "video required" });
-    }
-
-    const level = req.body.level || "medium";
-
-    const noiseMap = {
-      low: "-40dB",
-      medium: "-35dB",
-      high: "-30dB"
-    };
-
-    const noise = noiseMap[level];
-
-    if (!noise) {
-      return res.status(400).json({ error: "invalid level" });
-    }
-
     const input = req.file.path;
     const logFile = `${input}.log`;
 
-    const cmd = `
-      ffmpeg -i "${input}"
-      -af silencedetect=n=${noise}:d=0.3
-      -f null - 2> "${logFile}"
-    `;
+    // <-- FIXED COMMAND
+    const cmd = `ffmpeg -i "${input}" -af silencedetect=n=-30dB:d=0.3 -f null - 2> "${logFile}"`;
 
     await run(cmd);
 
@@ -115,7 +94,7 @@ app.post("/analyze-silence", upload.single("video"), async (req, res) => {
 
     res.json({
       status: "ok",
-      level,
+      durationDetected: silences.reduce((a, b) => a + b.duration, 0),
       silences
     });
 
