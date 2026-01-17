@@ -40,7 +40,7 @@ function run(cmd) {
   return new Promise((resolve, reject) => {
     exec(cmd, (error, stdout, stderr) => {
       if (error) reject(stderr || error.message);
-      else resolve(stdout);
+      else resolve(stderr || stdout);
     });
   });
 }
@@ -58,17 +58,35 @@ app.get("/", (req, res) => {
 });
 
 /* ===============================
-   ANALYZE SILENCE
+   ANALYZE SILENCE (FIXED)
 ================================ */
 
 app.post("/analyze-silence", upload.single("video"), async (req, res) => {
   try {
+    if (!req.file) {
+      return res.status(400).json({ error: "video required" });
+    }
+
+    const level = req.body.level || "medium";
+
+    const noiseMap = {
+      low: "-40dB",
+      medium: "-35dB",
+      high: "-30dB"
+    };
+
+    const noise = noiseMap[level];
+
+    if (!noise) {
+      return res.status(400).json({ error: "invalid level" });
+    }
+
     const input = req.file.path;
     const logFile = `${input}.log`;
 
     const cmd = `
-      ffmpeg -i "${input}" 
-      -af silencedetect=n=-30dB:d=0.3 
+      ffmpeg -i "${input}"
+      -af silencedetect=n=${noise}:d=0.3
       -f null - 2> "${logFile}"
     `;
 
@@ -97,9 +115,10 @@ app.post("/analyze-silence", upload.single("video"), async (req, res) => {
 
     res.json({
       status: "ok",
-      durationDetected: silences.reduce((a, b) => a + b.duration, 0),
+      level,
       silences
     });
+
   } catch (err) {
     res.status(500).json({ error: err.toString() });
   }
@@ -119,14 +138,14 @@ app.post("/apply-silence", upload.single("video"), async (req, res) => {
       return res.status(400).json({ error: "Silence list missing" });
     }
 
-    let filters = silences
+    const filters = silences
       .map(s => `between(t,${s.start},${s.end})`)
       .join("+");
 
     const cmd = `
-      ffmpeg -i "${input}" 
-      -af "aselect='not(${filters})',asetpts=N/SR/TB" 
-      -vf "select='not(${filters})',setpts=N/FRAME_RATE/TB" 
+      ffmpeg -i "${input}"
+      -af "aselect='not(${filters})',asetpts=N/SR/TB"
+      -vf "select='not(${filters})',setpts=N/FRAME_RATE/TB"
       "${output}"
     `;
 
@@ -136,13 +155,14 @@ app.post("/apply-silence", upload.single("video"), async (req, res) => {
       status: "silence_removed",
       outputFile: output
     });
+
   } catch (err) {
     res.status(500).json({ error: err.toString() });
   }
 });
 
 /* ===============================
-   EXTRACT AUDIO (FOR CAPTIONS)
+   EXTRACT AUDIO
 ================================ */
 
 app.post("/extract-audio", upload.single("video"), async (req, res) => {
@@ -156,13 +176,14 @@ app.post("/extract-audio", upload.single("video"), async (req, res) => {
       status: "audio_extracted",
       audioFile: audio
     });
+
   } catch (err) {
     res.status(500).json({ error: err.toString() });
   }
 });
 
 /* ===============================
-   APPLY CAPTIONS (SRT)
+   APPLY CAPTIONS
 ================================ */
 
 app.post("/apply-captions", upload.fields([
@@ -175,8 +196,8 @@ app.post("/apply-captions", upload.fields([
     const output = `${TMP_DIR}/${uid()}.mp4`;
 
     const cmd = `
-      ffmpeg -i "${video}" 
-      -vf subtitles="${srt}" 
+      ffmpeg -i "${video}"
+      -vf subtitles="${srt}"
       "${output}"
     `;
 
@@ -186,13 +207,14 @@ app.post("/apply-captions", upload.fields([
       status: "captions_applied",
       outputFile: output
     });
+
   } catch (err) {
     res.status(500).json({ error: err.toString() });
   }
 });
 
 /* ===============================
-   CLEANUP TEMP FILE
+   CLEANUP
 ================================ */
 
 app.post("/cleanup", (req, res) => {
@@ -202,7 +224,7 @@ app.post("/cleanup", (req, res) => {
 });
 
 /* ===============================
-   SERVER START
+   START SERVER
 ================================ */
 
 app.listen(PORT, () => {
