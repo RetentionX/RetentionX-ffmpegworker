@@ -124,41 +124,70 @@ app.post("/analyze-silence", upload.single("video"), async (req, res) => {
 });
 
 /* ===============================
-   APPLY SILENCE CUTS
+   APPLY SILENCE CUTS (FIXED)
 ================================ */
 
-app.post("/apply-silence", upload.single("video"), async (req, res) => {
-  try {
-    const { silences } = req.body;
-    const input = req.file.path;
-    const output = `${TMP_DIR}/${uid()}.mp4`;
+app.post(
+  "/apply-silence",
+  upload.fields([
+    { name: "video", maxCount: 1 },
+    { name: "silences_file", maxCount: 1 }
+  ]),
+  async (req, res) => {
+    try {
+      // 1. Validate video
+      if (!req.files?.video?.[0]) {
+        return res.status(400).json({ error: "Video file missing" });
+      }
 
-    if (!silences || !Array.isArray(silences)) {
-      return res.status(400).json({ error: "Silence list missing" });
+      // 2. Validate silence file
+      if (!req.files?.silences_file?.[0]) {
+        return res.status(400).json({ error: "Silence list missing" });
+      }
+
+      const input = req.files.video[0].path;
+      const output = `${TMP_DIR}/${uid()}.mp4`;
+
+      // 3. Parse silence JSON
+      let silences;
+      try {
+        silences = JSON.parse(
+          req.files.silences_file[0].buffer.toString("utf-8")
+        );
+      } catch (e) {
+        return res.status(400).json({ error: "Invalid silence JSON" });
+      }
+
+      // 4. Validate silence data
+      if (!Array.isArray(silences) || silences.length === 0) {
+        return res.status(400).json({ error: "Empty silence list" });
+      }
+
+      // 5. Build FFmpeg filters
+      const filters = silences
+        .map(s => `between(t,${s.start},${s.end})`)
+        .join("+");
+
+      const cmd = `
+        ffmpeg -y -i "${input}" \
+        -af "aselect='not(${filters})',asetpts=N/SR/TB" \
+        -vf "select='not(${filters})',setpts=N/FRAME_RATE/TB" \
+        "${output}"
+      `;
+
+      await run(cmd);
+
+      res.json({
+        status: "silence_removed",
+        outputFile: output
+      });
+
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Video processing failed" });
     }
-
-    const filters = silences
-      .map(s => `between(t,${s.start},${s.end})`)
-      .join("+");
-
-    const cmd = `
-      ffmpeg -i "${input}"
-      -af "aselect='not(${filters})',asetpts=N/SR/TB"
-      -vf "select='not(${filters})',setpts=N/FRAME_RATE/TB"
-      "${output}"
-    `;
-
-    await run(cmd);
-
-    res.json({
-      status: "silence_removed",
-      outputFile: output
-    });
-
-  } catch (err) {
-    res.status(500).json({ error: err.toString() });
   }
-});
+);
 
 /* ===============================
    EXTRACT AUDIO
