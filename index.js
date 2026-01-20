@@ -48,7 +48,7 @@ if (!fs.existsSync(TMP_DIR)) {
 ================================ */
 
 const upload = multer({
-  dest: TMP_DIR,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 1024 * 1024 * 1024 } // 1GB
 });
 
@@ -124,103 +124,103 @@ app.post("/analyze-silence", upload.single("video"), async (req, res) => {
 });
 
 /* ===============================
-   APPLY SILENCE CUTS (FINAL FIX)
+   APPLY SILENCE CUTS (PERMANENT STABLE)
 ================================ */
 
-app.post(
-  "/apply-silence",
-  upload.single("video"),
-  async (req, res) => {
+app.post("/apply-silence", upload.any(), async (req, res) => {
+  try {
+    /* ---------- 1. Get video ---------- */
+    const videoFile = req.files.find(f => f.fieldname === "video");
+
+    if (!videoFile) {
+      return res.status(400).json({ error: "Video file missing" });
+    }
+
+    const inputPath = `${TMP_DIR}/${uid()}_${videoFile.originalname}`;
+    const outputPath = `${TMP_DIR}/${uid()}.mp4`;
+
+    require("fs").writeFileSync(inputPath, videoFile.buffer);
+
+    /* ---------- 2. Get silences ---------- */
+    let silencesRaw =
+      req.body?.silences ||
+      req.body?.silenceSegments ||
+      req.body?.silence_list;
+
+    if (!silencesRaw) {
+      return res.status(400).json({ error: "Silence list missing" });
+    }
+
+    /* ---------- 3. Normalize JSON ---------- */
+    let silences;
+
     try {
-      /* ---------- 1. Validate video ---------- */
-      if (!req.file) {
-        return res.status(400).json({ error: "Video file missing" });
+      if (typeof silencesRaw === "string") {
+        silences = JSON.parse(silencesRaw);
+      } else {
+        silences = silencesRaw;
       }
-
-      const input = req.file.path;
-      const output = `${TMP_DIR}/${uid()}.mp4`;
-
-      /* ---------- 2. Read silences from ANY source ---------- */
-      let silencesRaw =
-        req.body.silences ||
-        req.body.silenceSegments ||
-        req.body.silence_list;
-
-      // If nothing received
-      if (!silencesRaw) {
-        return res.status(400).json({ error: "Silence list missing" });
-      }
-
-      /* ---------- 3. Parse silence JSON ---------- */
-      let silences;
-      try {
-        if (typeof silencesRaw === "string") {
-          silences = JSON.parse(silencesRaw);
-        } else {
-          silences = silencesRaw;
-        }
-      } catch (err) {
-        return res.status(400).json({
-          error: "Invalid silence JSON",
-          received: silencesRaw
-        });
-      }
-
-      /* ---------- 4. Validate silence array ---------- */
-      if (!Array.isArray(silences) || silences.length === 0) {
-        return res.status(400).json({ error: "Empty or invalid silence list" });
-      }
-
-      silences = silences.map(s => ({
-        start: Number(s.start),
-        end: Number(s.end)
-      }));
-
-      for (const s of silences) {
-        if (
-          Number.isNaN(s.start) ||
-          Number.isNaN(s.end) ||
-          s.start >= s.end
-        ) {
-          return res.status(400).json({
-            error: "Invalid silence range",
-            silence: s
-          });
-        }
-      }
-
-      console.log("Parsed silences:", silences);
-
-      /* ---------- 5. Build FFmpeg filters ---------- */
-      const filters = silences
-        .map(s => `between(t,${s.start},${s.end})`)
-        .join("+");
-
-      const cmd = `
-        ffmpeg -y -i "${input}" \
-        -af "aselect='not(${filters})',asetpts=N/SR/TB" \
-        -vf "select='not(${filters})',setpts=N/FRAME_RATE/TB" \
-        "${output}"
-      `;
-
-      await run(cmd);
-
-      /* ---------- 6. Respond ---------- */
-      res.json({
-        status: "silence_removed",
-        outputFile: output,
-        silencesApplied: silences.length
-      });
-
     } catch (err) {
-      console.error("Apply silence failed:", err);
-      res.status(500).json({
-        error: "Video processing failed",
-        details: err.message
+      return res.status(400).json({
+        error: "Invalid silence JSON",
+        received: silencesRaw
       });
     }
+
+    /* ---------- 4. Validate silences ---------- */
+    if (!Array.isArray(silences) || silences.length === 0) {
+      return res.status(400).json({ error: "Empty silence list" });
+    }
+
+    silences = silences.map(s => ({
+      start: Number(s.start),
+      end: Number(s.end)
+    }));
+
+    for (const s of silences) {
+      if (
+        Number.isNaN(s.start) ||
+        Number.isNaN(s.end) ||
+        s.start >= s.end
+      ) {
+        return res.status(400).json({
+          error: "Invalid silence range",
+          silence: s
+        });
+      }
+    }
+
+    console.log("Silences accepted:", silences.length);
+
+    /* ---------- 5. Build FFmpeg filters ---------- */
+    const filterExpr = silences
+      .map(s => `between(t,${s.start},${s.end})`)
+      .join("+");
+
+    const cmd = `
+      ffmpeg -y -i "${inputPath}"
+      -af "aselect='not(${filterExpr})',asetpts=N/SR/TB"
+      -vf "select='not(${filterExpr})',setpts=N/FRAME_RATE/TB"
+      "${outputPath}"
+    `;
+
+    await run(cmd);
+
+    /* ---------- 6. Success ---------- */
+    res.json({
+      status: "silence_removed",
+      outputFile: outputPath,
+      silencesApplied: silences.length
+    });
+
+  } catch (err) {
+    console.error("Apply silence failed:", err);
+    res.status(500).json({
+      error: "Video processing failed",
+      details: err.message
+    });
   }
-);
+});
 
 /* ===============================
    EXTRACT AUDIO
