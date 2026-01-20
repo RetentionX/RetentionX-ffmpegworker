@@ -124,46 +124,74 @@ app.post("/analyze-silence", upload.single("video"), async (req, res) => {
 });
 
 /* ===============================
-   APPLY SILENCE CUTS (FIXED)
+   APPLY SILENCE CUTS (FINAL FIX)
 ================================ */
 
 app.post(
   "/apply-silence",
-  upload.fields([
-    { name: "video", maxCount: 1 },
-    { name: "silences_file", maxCount: 1 }
-  ]),
+  upload.single("video"),
   async (req, res) => {
     try {
-      // 1. Validate video
-      if (!req.files?.video?.[0]) {
+      /* ---------- 1. Validate video ---------- */
+      if (!req.file) {
         return res.status(400).json({ error: "Video file missing" });
       }
 
-      // 2. Validate silence file
-      if (!req.files?.silences_file?.[0]) {
+      const input = req.file.path;
+      const output = `${TMP_DIR}/${uid()}.mp4`;
+
+      /* ---------- 2. Read silences from ANY source ---------- */
+      let silencesRaw =
+        req.body.silences ||
+        req.body.silenceSegments ||
+        req.body.silence_list;
+
+      // If nothing received
+      if (!silencesRaw) {
         return res.status(400).json({ error: "Silence list missing" });
       }
 
-      const input = req.files.video[0].path;
-      const output = `${TMP_DIR}/${uid()}.mp4`;
-
-      // 3. Parse silence JSON
+      /* ---------- 3. Parse silence JSON ---------- */
       let silences;
       try {
-        silences = JSON.parse(
-          req.files.silences_file[0].buffer.toString("utf-8")
-        );
-      } catch (e) {
-        return res.status(400).json({ error: "Invalid silence JSON" });
+        if (typeof silencesRaw === "string") {
+          silences = JSON.parse(silencesRaw);
+        } else {
+          silences = silencesRaw;
+        }
+      } catch (err) {
+        return res.status(400).json({
+          error: "Invalid silence JSON",
+          received: silencesRaw
+        });
       }
 
-      // 4. Validate silence data
+      /* ---------- 4. Validate silence array ---------- */
       if (!Array.isArray(silences) || silences.length === 0) {
-        return res.status(400).json({ error: "Empty silence list" });
+        return res.status(400).json({ error: "Empty or invalid silence list" });
       }
 
-      // 5. Build FFmpeg filters
+      silences = silences.map(s => ({
+        start: Number(s.start),
+        end: Number(s.end)
+      }));
+
+      for (const s of silences) {
+        if (
+          Number.isNaN(s.start) ||
+          Number.isNaN(s.end) ||
+          s.start >= s.end
+        ) {
+          return res.status(400).json({
+            error: "Invalid silence range",
+            silence: s
+          });
+        }
+      }
+
+      console.log("Parsed silences:", silences);
+
+      /* ---------- 5. Build FFmpeg filters ---------- */
       const filters = silences
         .map(s => `between(t,${s.start},${s.end})`)
         .join("+");
@@ -177,14 +205,19 @@ app.post(
 
       await run(cmd);
 
+      /* ---------- 6. Respond ---------- */
       res.json({
         status: "silence_removed",
-        outputFile: output
+        outputFile: output,
+        silencesApplied: silences.length
       });
 
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Video processing failed" });
+      console.error("Apply silence failed:", err);
+      res.status(500).json({
+        error: "Video processing failed",
+        details: err.message
+      });
     }
   }
 );
