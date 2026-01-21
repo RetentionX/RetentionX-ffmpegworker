@@ -47,14 +47,6 @@ if (!fs.existsSync(TMP_DIR)) {
    MULTER (UPLOAD – DISK STORAGE)
 ================================ */
 
-const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-
-if (!fs.existsSync(TMP_DIR)) {
-  fs.mkdirSync(TMP_DIR, { recursive: true });
-}
-
 const upload = multer({
   dest: TMP_DIR,
   limits: {
@@ -165,7 +157,7 @@ app.post("/apply-silence", upload.any(), async (req, res) => {
     const inputPath = `${TMP_DIR}/${uid()}_${videoFile.originalname}`;
     const outputPath = `${TMP_DIR}/${uid()}.mp4`;
 
-    require("fs").writeFileSync(inputPath, videoFile.buffer);
+    const inputPath = videoFile.path;
 
     /* ---------- 2. Get silences ---------- */
     let silencesRaw =
