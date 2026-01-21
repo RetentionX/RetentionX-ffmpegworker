@@ -44,12 +44,22 @@ if (!fs.existsSync(TMP_DIR)) {
 }
 
 /* ===============================
-   MULTER (UPLOAD)
+   MULTER (UPLOAD – DISK STORAGE)
 ================================ */
 
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+
+if (!fs.existsSync(TMP_DIR)) {
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+}
+
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 1024 * 1024 * 1024 } // 1GB
+  dest: TMP_DIR,
+  limits: {
+    fileSize: 1024 * 1024 * 1024 // 1GB
+  }
 });
 
 /* ===============================
@@ -78,19 +88,27 @@ app.get("/", (req, res) => {
 });
 
 /* ===============================
-   ANALYZE SILENCE (FIXED)
+   ANALYZE SILENCE (FINAL WORKING)
 ================================ */
 
 app.post("/analyze-silence", upload.single("video"), async (req, res) => {
   try {
+    /* ---------- 1. Validate input ---------- */
+    if (!req.file || !req.file.path) {
+      return res.status(400).json({
+        error: "Video file missing",
+        hint: "Send multipart/form-data with field name 'video'"
+      });
+    }
+
     const input = req.file.path;
     const logFile = `${input}.log`;
 
-    // <-- FIXED COMMAND
-    const cmd = `ffmpeg -i "${input}" -af silencedetect=n=-30dB:d=0.3 -f null - 2> "${logFile}"`;
-
+    /* ---------- 2. Run FFmpeg silence detection ---------- */
+    const cmd = `ffmpeg -y -i "${input}" -af silencedetect=n=-30dB:d=0.3 -f null - 2> "${logFile}"`;
     await run(cmd);
 
+    /* ---------- 3. Parse silence log ---------- */
     const log = fs.readFileSync(logFile, "utf8");
     const lines = log.split("\n");
 
@@ -101,6 +119,7 @@ app.post("/analyze-silence", upload.single("video"), async (req, res) => {
       if (line.includes("silence_start")) {
         start = parseFloat(line.split("silence_start:")[1]);
       }
+
       if (line.includes("silence_end") && start !== null) {
         const end = parseFloat(line.split("silence_end:")[1]);
         silences.push({
@@ -112,14 +131,21 @@ app.post("/analyze-silence", upload.single("video"), async (req, res) => {
       }
     }
 
+    /* ---------- 4. Respond ---------- */
     res.json({
       status: "ok",
-      durationDetected: silences.reduce((a, b) => a + b.duration, 0),
-      silences
+      silences,
+      totalSilenceDuration: silences.reduce(
+        (sum, s) => sum + s.duration,
+        0
+      )
     });
 
   } catch (err) {
-    res.status(500).json({ error: err.toString() });
+    console.error("Analyze silence failed:", err);
+    res.status(500).json({
+      error: "Video analysis failed"
+    });
   }
 });
 
