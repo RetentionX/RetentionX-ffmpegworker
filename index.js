@@ -142,43 +142,46 @@ app.post("/analyze-silence", upload.single("video"), async (req, res) => {
 });
 
 /* ===============================
-   APPLY SILENCE CUTS (PERMANENT STABLE)
+   APPLY SILENCE CUTS (FINAL STABLE)
 ================================ */
 
 app.post("/apply-silence", upload.any(), async (req, res) => {
   try {
-    /* ---------- 1. Get video ---------- */
-    const videoFile = req.files.find(f => f.fieldname === "video");
-
-    if (!videoFile) {
-      return res.status(400).json({ error: "Video file missing" });
+    /* ---------- 1. Get uploaded video ---------- */
+    if (!req.files || !Array.isArray(req.files)) {
+      return res.status(400).json({ error: "No files received" });
     }
 
-    const inputPath = `${TMP_DIR}/${uid()}_${videoFile.originalname}`;
+    const videoFile = req.files.find(f => f.fieldname === "video");
+
+    if (!videoFile || !videoFile.path) {
+      return res.status(400).json({
+        error: "Video file missing",
+        hint: "Send multipart/form-data with field name 'video'"
+      });
+    }
+
+    const inputPath = videoFile.path; // ✅ USE MULTER PATH
     const outputPath = `${TMP_DIR}/${uid()}.mp4`;
 
-    const inputPath = videoFile.path;
-
-    /* ---------- 2. Get silences ---------- */
+    /* ---------- 2. Read silences ---------- */
     let silencesRaw =
-      req.body?.silences ||
-      req.body?.silenceSegments ||
-      req.body?.silence_list;
+      req.body.silences ||
+      req.body.silenceSegments ||
+      req.body.silence_list;
 
     if (!silencesRaw) {
       return res.status(400).json({ error: "Silence list missing" });
     }
 
-    /* ---------- 3. Normalize JSON ---------- */
+    /* ---------- 3. Parse silence JSON ---------- */
     let silences;
-
     try {
-      if (typeof silencesRaw === "string") {
-        silences = JSON.parse(silencesRaw);
-      } else {
-        silences = silencesRaw;
-      }
-    } catch (err) {
+      silences =
+        typeof silencesRaw === "string"
+          ? JSON.parse(silencesRaw)
+          : silencesRaw;
+    } catch {
       return res.status(400).json({
         error: "Invalid silence JSON",
         received: silencesRaw
@@ -208,17 +211,15 @@ app.post("/apply-silence", upload.any(), async (req, res) => {
       }
     }
 
-    console.log("Silences accepted:", silences.length);
-
-    /* ---------- 5. Build FFmpeg filters ---------- */
+    /* ---------- 5. Build FFmpeg filter ---------- */
     const filterExpr = silences
       .map(s => `between(t,${s.start},${s.end})`)
       .join("+");
 
     const cmd = `
-      ffmpeg -y -i "${inputPath}"
-      -af "aselect='not(${filterExpr})',asetpts=N/SR/TB"
-      -vf "select='not(${filterExpr})',setpts=N/FRAME_RATE/TB"
+      ffmpeg -y -i "${inputPath}" \
+      -af "aselect='not(${filterExpr})',asetpts=N/SR/TB" \
+      -vf "select='not(${filterExpr})',setpts=N/FRAME_RATE/TB" \
       "${outputPath}"
     `;
 
